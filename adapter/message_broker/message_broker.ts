@@ -7,11 +7,22 @@ import type { MessageBrokerQueues } from "./queues.ts";
 type PublishParams = {
 	queue: MessageBrokerQueues;
 	message: unknown;
+	options?: {
+		correlationId: string;
+	}
 }
 
 type ConsumerParams = {
 	queue: MessageBrokerQueues;
 	callback: (data: string) => Promise<void>;
+}
+
+type RetryOptions = {
+	queue: MessageBrokerQueues;
+	correlationId: string;
+	retryCount: number;
+	message: Uint8Array<ArrayBufferLike>;
+	deliveryTag: number;
 }
 
 export class MessageBroker {
@@ -86,14 +97,18 @@ export class MessageBroker {
 				noAck: false,
 			},
 			async (args, props, message) => {
-				const data = new TextDecoder().decode(message)
+				const data = new TextDecoder().decode(message);
+
+				const retryCount = Number(props.headers?.["x-retry"] ?? 0);
+				const MAX_ALLOWED_RETRIES = 5;
 
 				this.logger.info(
 					'Receiving new message: \n',
 					{
 						id: props.correlationId,
 						event: 'RECEIVED',
-						redelivered: args.redelivered,
+						retries: `${retryCount}/5`,
+						failed: retryCount !== 0,
 						queue: queue,
 					}
 				);
@@ -110,7 +125,22 @@ export class MessageBroker {
 				}
 
 				catch {
-					await this.asyncRetry(channel, args.deliveryTag, 15_000)
+					if (retryCount >= MAX_ALLOWED_RETRIES) {
+						this.logger.error(`Max retries reached for ${props.correlationId} at ${queue} queue, discarding...`);
+						await channel.ack({ deliveryTag: args.deliveryTag });
+						return;
+					}
+
+					await this.asyncRetry(
+						channel,
+						{
+							correlationId: props.correlationId!,
+							queue: queue,
+							retryCount: retryCount,
+							message: message,
+							deliveryTag: args.deliveryTag,
+						}
+					)
 				}
 			}
 		)
@@ -118,15 +148,23 @@ export class MessageBroker {
 		this.logger.info(`New message broker consumer registered for queue ${queue}`);
 	}
 
-	private async asyncRetry(channel: AmqpChannel, deliveryTag: number, time: number) {
-		await new Promise((resolve) => setTimeout(resolve, time));
+	private async asyncRetry(channel: AmqpChannel, options: RetryOptions) {
+		const { queue, correlationId, message, deliveryTag, retryCount } = options;
 
-		await channel.nack(
+		await new Promise((resolve) => setTimeout(resolve, 30_000));
+
+		await channel.publish(
 			{
-				deliveryTag: deliveryTag,
-				multiple: false,
-				requeue: true,
-			}
-		)
+				routingKey: queue,
+			},
+			{
+				contentType: 'application/json',
+				correlationId: correlationId,
+				headers: { "x-retry": retryCount + 1 },
+			},
+			message
+		);
+
+		await channel.ack({ deliveryTag: deliveryTag });
 	}
 }
