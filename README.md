@@ -7,13 +7,13 @@
 > https://aistudio.google.com/apikey
 
 ```bash
-# When running locally
+# On Linux / Mac
 export RABBITMQ_URL="amqp://admin:guest@localhost"
-export GEMINI_API_KEY="LOREMLOREMLOREMLOREMLOREMLOREM"
+export GEMINI_API_KEY="..."
 
-# Or when running from docker
-export RABBITMQ_URL="amqp://admin:guest@rabbitmq"
-export GEMINI_API_KEY="LOREMLOREMLOREMLOREMLOREMLOREM"
+# On Windows
+$env:RABBITMQ_URL="amqp://admin:guest@rabbitmq"
+$env:GEMINI_API_KEY="..."
 ```
 
 2. Create a shared network to establish connection with RabbitMQ at multiple
