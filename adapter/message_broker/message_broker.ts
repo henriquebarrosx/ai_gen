@@ -1,10 +1,10 @@
 import { connect } from "https://deno.land/x/amqp@v0.23.0/mod.ts"
 import type { AmqpConnection, AmqpChannel } from "https://deno.land/x/amqp@v0.23.0/mod.ts"
 
-import { Logger } from "../logger/logger.ts";
 import type { MessageBrokerQueues } from "./queues.ts";
+import { Logger } from "../logger/logger.ts";
 
-type PublishParams = {
+type PublishInput = {
 	queue: MessageBrokerQueues;
 	message: unknown;
 	options?: {
@@ -12,9 +12,14 @@ type PublishParams = {
 	}
 }
 
-type ConsumerParams = {
+type ConsumerInput = {
 	queue: MessageBrokerQueues;
-	callback: (data: string) => Promise<void>;
+	callback: (output: ConsumerOutput) => Promise<void>;
+}
+
+type ConsumerOutput = {
+	correlationId: string;
+	data: string;
 }
 
 type RetryOptions = {
@@ -33,14 +38,27 @@ export class MessageBroker {
 	) { }
 
 	async connect() {
-		const url = Deno.env.get("RABBITMQ_URL");
-		if (!url) throw new Error('Cannot initilize message broker: url not defined');
+		while (!this.conn) {
+			try {
+				const url = Deno.env.get("RABBITMQ_URL");
+				if (!url) throw new Error('Cannot initilize message broker: url not defined');
 
-		this.conn = await connect(url);
-		this.logger.info('Message broker connection established');
+				this.conn = await connect(url);
+				this.logger.info('Message broker connection established');
+			}
+
+			catch (error) {
+				if (error && typeof error === 'object' && 'message' in error) {
+					this.logger.error("Failed to connect message broker, retrying in 5s", error.message);
+				}
+
+				await new Promise(res => setTimeout(res, 5000));
+				this.conn = undefined;
+			}
+		}
 	}
 
-	async publish({ queue, message }: PublishParams) {
+	async publish({ queue, message }: PublishInput) {
 		if (!this.conn) {
 			throw new Error('Cannot publish message: must establish a connection first')
 		}
@@ -68,7 +86,7 @@ export class MessageBroker {
 		)
 
 		this.logger.info(
-			'Publishing new message: \n',
+			'Publishing new message',
 			{
 				event: 'PUBLISH',
 				queue: queue,
@@ -77,7 +95,7 @@ export class MessageBroker {
 		);
 	}
 
-	async listen({ queue, callback }: ConsumerParams) {
+	async listen({ queue, callback }: ConsumerInput) {
 		if (!this.conn) {
 			throw new Error(`Cannot consume message for queue ${queue}: must establish a connection first`)
 		}
@@ -103,7 +121,7 @@ export class MessageBroker {
 				const MAX_ALLOWED_RETRIES = 5;
 
 				this.logger.info(
-					'Receiving new message: \n',
+					'Receiving new message',
 					{
 						id: props.correlationId,
 						event: 'RECEIVED',
@@ -114,7 +132,10 @@ export class MessageBroker {
 				);
 
 				try {
-					await callback(data);
+					await callback({
+						correlationId: props.correlationId!,
+						data: data,
+					});
 
 					await channel.ack(
 						{
@@ -151,7 +172,7 @@ export class MessageBroker {
 	private async asyncRetry(channel: AmqpChannel, options: RetryOptions) {
 		const { queue, correlationId, message, deliveryTag, retryCount } = options;
 
-		await new Promise((resolve) => setTimeout(resolve, 30_000));
+		await this.waitTime(30_000);
 
 		await channel.publish(
 			{
@@ -166,5 +187,9 @@ export class MessageBroker {
 		);
 
 		await channel.ack({ deliveryTag: deliveryTag });
+	}
+
+	private async waitTime(amout: number) {
+		await new Promise((resolve) => setTimeout(resolve, amout));
 	}
 }

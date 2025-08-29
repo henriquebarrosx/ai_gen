@@ -8,8 +8,8 @@ await messageBroker.connect();
 
 await messageBroker.listen({
   queue: MessageBrokerQueues.THE_NEWS_ARTICLE_GENERATION,
-  callback: async (res) => {
-    const { input } = JSON.parse(res);
+  callback: async ({ data }) => {
+    const { input } = JSON.parse(data);
 
     const prompt = `
             ${THE_NEWS_PROMPT}
